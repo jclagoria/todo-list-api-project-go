@@ -20,13 +20,30 @@ func RunMigrations(db *sql.DB) error {
 	return nil
 }
 
+// splitStatements splits SQL on semicolons, ignoring those inside single-quoted strings.
 func splitStatements(sql string) []string {
 	var stmts []string
-	for _, s := range strings.Split(sql, ";") {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			stmts = append(stmts, s)
+	var buf strings.Builder
+	inQuote := false
+
+	for _, ch := range sql {
+		switch {
+		case ch == '\'' && !inQuote:
+			inQuote = true
+		case ch == '\'' && inQuote:
+			inQuote = false
+		case ch == ';' && !inQuote:
+			s := strings.TrimSpace(buf.String())
+			if s != "" {
+				stmts = append(stmts, s)
+			}
+			buf.Reset()
+			continue
 		}
+		buf.WriteRune(ch)
+	}
+	if s := strings.TrimSpace(buf.String()); s != "" {
+		stmts = append(stmts, s)
 	}
 	return stmts
 }
