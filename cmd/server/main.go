@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"todo-list-api/internal/db"
+	"todo-list-api/internal/handler"
 	"todo-list-api/internal/middleware"
 
 	"github.com/gin-gonic/gin"
@@ -52,17 +53,7 @@ func main() {
 	router.Use(gin.Recovery())
 	router.Use(middleware.RequestID())
 
-	router.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
-
-	router.GET("/health/ready", func(c *gin.Context) {
-		if err := dbConn.Ping(); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
+	handler.RegisterHealthRoutes(router, dbConn)
 
 	srv := &http.Server{
 		Addr:    ":" + port,
