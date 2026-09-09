@@ -16,6 +16,7 @@ ADR review completed for this change.
 | File | Title | Status |
 |------|-------|--------|
 | `adr/0001-go-project-directory-structure.md` | Go Project Directory Structure | Accepted |
+| `adr/0002-todo-repository-pattern.md` | Todo Repository Pattern | Accepted |
 
 ## Decisions Not Recorded
 
