@@ -3,8 +3,8 @@ package db
 import (
 	"database/sql"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/jackc/pgx/v5/stdlib" // Register PostgreSQL driver for database/sql
+	_ "github.com/mattn/go-sqlite3"    // Register SQLite driver for database/sql
 )
 
 func Connect(dsn string) (*sql.DB, error) {

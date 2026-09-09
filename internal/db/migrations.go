@@ -2,7 +2,7 @@ package db
 
 import (
 	"database/sql"
-	_ "embed"
+	_ "embed" // Required for //go:embed directive
 	"fmt"
 	"strings"
 )
