@@ -48,18 +48,31 @@ func setupTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
+// ponytail: helpers for repeated test setup
+func seedUser(t *testing.T, db *sql.DB, id, name, email string) {
+	t.Helper()
+	_, err := db.Exec("INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)",
+		id, name, email, "hash")
+	if err != nil {
+		t.Fatalf("failed to create user %s: %v", id, err)
+	}
+}
+
+func seedTodo(t *testing.T, repo *TodoRepository, userID, title string, status model.TodoStatus, priority model.TodoPriority) *model.Todo {
+	t.Helper()
+	created, err := repo.Create(userID, &model.Todo{Title: title, Status: status, Priority: priority})
+	if err != nil {
+		t.Fatalf("failed to create todo: %v", err)
+	}
+	return created
+}
+
 func TestCreate(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close() //nolint:errcheck
 
 	repo := NewTodoRepository(db)
-
-	// Create a test user first
-	_, err := db.Exec("INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)",
-		"user-1", "Test User", "test@example.com", "hash")
-	if err != nil {
-		t.Fatalf("failed to create test user: %v", err)
-	}
+	seedUser(t, db, "user-1", "Test User", "test@example.com")
 
 	todo := &model.Todo{
 		Title:       "Test Todo",
@@ -102,24 +115,9 @@ func TestFindByID(t *testing.T) {
 	defer db.Close() //nolint:errcheck
 
 	repo := NewTodoRepository(db)
+	seedUser(t, db, "user-1", "Test User", "test@example.com")
 
-	// Create test user
-	_, err := db.Exec("INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)",
-		"user-1", "Test User", "test@example.com", "hash")
-	if err != nil {
-		t.Fatalf("failed to create test user: %v", err)
-	}
-
-	// Create test todo
-	todo := &model.Todo{
-		Title:    "Test Todo",
-		Status:   model.TodoStatusPending,
-		Priority: model.TodoPriorityMedium,
-	}
-	created, err := repo.Create("user-1", todo)
-	if err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
+	created := seedTodo(t, repo, "user-1", "Test Todo", model.TodoStatusPending, model.TodoPriorityMedium)
 
 	t.Run("found", func(t *testing.T) {
 		found, err := repo.FindByID("user-1", created.ID)
@@ -190,24 +188,9 @@ func TestUpdate(t *testing.T) {
 	defer db.Close() //nolint:errcheck
 
 	repo := NewTodoRepository(db)
+	seedUser(t, db, "user-1", "Test User", "test@example.com")
 
-	// Create test user
-	_, err := db.Exec("INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)",
-		"user-1", "Test User", "test@example.com", "hash")
-	if err != nil {
-		t.Fatalf("failed to create test user: %v", err)
-	}
-
-	// Create test todo
-	todo := &model.Todo{
-		Title:    "Test Todo",
-		Status:   model.TodoStatusPending,
-		Priority: model.TodoPriorityMedium,
-	}
-	created, err := repo.Create("user-1", todo)
-	if err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
+	created := seedTodo(t, repo, "user-1", "Test Todo", model.TodoStatusPending, model.TodoPriorityMedium)
 
 	t.Run("success", func(t *testing.T) {
 		updated := &model.Todo{
@@ -268,24 +251,9 @@ func TestDelete(t *testing.T) {
 	defer db.Close() //nolint:errcheck
 
 	repo := NewTodoRepository(db)
+	seedUser(t, db, "user-1", "Test User", "test@example.com")
 
-	// Create test user
-	_, err := db.Exec("INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)",
-		"user-1", "Test User", "test@example.com", "hash")
-	if err != nil {
-		t.Fatalf("failed to create test user: %v", err)
-	}
-
-	// Create test todo
-	todo := &model.Todo{
-		Title:    "Test Todo",
-		Status:   model.TodoStatusPending,
-		Priority: model.TodoPriorityMedium,
-	}
-	created, err := repo.Create("user-1", todo)
-	if err != nil {
-		t.Fatalf("Create failed: %v", err)
-	}
+	created := seedTodo(t, repo, "user-1", "Test Todo", model.TodoStatusPending, model.TodoPriorityMedium)
 
 	t.Run("success", func(t *testing.T) {
 		err := repo.Delete("user-1", created.ID)
@@ -330,25 +298,12 @@ func TestList(t *testing.T) {
 	defer db.Close() //nolint:errcheck
 
 	repo := NewTodoRepository(db)
-
-	// Create test user
-	_, err := db.Exec("INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)",
-		"user-1", "Test User", "test@example.com", "hash")
-	if err != nil {
-		t.Fatalf("failed to create test user: %v", err)
-	}
+	seedUser(t, db, "user-1", "Test User", "test@example.com")
 
 	// Create 5 test todos
 	for i := 0; i < 5; i++ {
-		todo := &model.Todo{
-			Title:    "Todo " + string(rune('A'+i)),
-			Status:   model.TodoStatusPending,
-			Priority: model.TodoPriorityMedium,
-		}
-		_, err := repo.Create("user-1", todo)
-		if err != nil {
-			t.Fatalf("Create failed: %v", err)
-		}
+		seedTodo(t, repo, "user-1", "Todo "+string(rune('A'+i)),
+			model.TodoStatusPending, model.TodoPriorityMedium)
 	}
 
 	t.Run("default pagination", func(t *testing.T) {
@@ -412,13 +367,7 @@ func TestFilter(t *testing.T) {
 	defer db.Close() //nolint:errcheck
 
 	repo := NewTodoRepository(db)
-
-	// Create test user
-	_, err := db.Exec("INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)",
-		"user-1", "Test User", "test@example.com", "hash")
-	if err != nil {
-		t.Fatalf("failed to create test user: %v", err)
-	}
+	seedUser(t, db, "user-1", "Test User", "test@example.com")
 
 	// Create test todos with different statuses and priorities
 	todos := []struct {
@@ -433,15 +382,8 @@ func TestFilter(t *testing.T) {
 		{"Buy cheese", model.TodoStatusPending, model.TodoPriorityMedium},
 	}
 
-	for _, todo := range todos {
-		_, err := repo.Create("user-1", &model.Todo{
-			Title:    todo.title,
-			Status:   todo.status,
-			Priority: todo.priority,
-		})
-		if err != nil {
-			t.Fatalf("Create failed: %v", err)
-		}
+	for _, td := range todos {
+		seedTodo(t, repo, "user-1", td.title, td.status, td.priority)
 	}
 
 	t.Run("filter by status", func(t *testing.T) {
@@ -500,13 +442,7 @@ func TestSort(t *testing.T) {
 	defer db.Close() //nolint:errcheck
 
 	repo := NewTodoRepository(db)
-
-	// Create test user
-	_, err := db.Exec("INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)",
-		"user-1", "Test User", "test@example.com", "hash")
-	if err != nil {
-		t.Fatalf("failed to create test user: %v", err)
-	}
+	seedUser(t, db, "user-1", "Test User", "test@example.com")
 
 	// Create test todos with different priorities
 	priorities := []model.TodoPriority{
@@ -517,15 +453,8 @@ func TestSort(t *testing.T) {
 	}
 
 	for i, p := range priorities {
-		todo := &model.Todo{
-			Title:    "Todo " + string(rune('A'+i)),
-			Status:   model.TodoStatusPending,
-			Priority: p,
-		}
-		_, err := repo.Create("user-1", todo)
-		if err != nil {
-			t.Fatalf("Create failed: %v", err)
-		}
+		seedTodo(t, repo, "user-1", "Todo "+string(rune('A'+i)),
+			model.TodoStatusPending, p)
 	}
 
 	t.Run("sort by priority", func(t *testing.T) {
@@ -572,29 +501,16 @@ func TestDeleteByUserID(t *testing.T) {
 	defer db.Close() //nolint:errcheck
 
 	repo := NewTodoRepository(db)
-
-	// Create test user
-	_, err := db.Exec("INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)",
-		"user-1", "Test User", "test@example.com", "hash")
-	if err != nil {
-		t.Fatalf("failed to create test user: %v", err)
-	}
+	seedUser(t, db, "user-1", "Test User", "test@example.com")
 
 	// Create 3 test todos
 	for i := 0; i < 3; i++ {
-		todo := &model.Todo{
-			Title:    "Todo " + string(rune('A'+i)),
-			Status:   model.TodoStatusPending,
-			Priority: model.TodoPriorityMedium,
-		}
-		_, err := repo.Create("user-1", todo)
-		if err != nil {
-			t.Fatalf("Create failed: %v", err)
-		}
+		seedTodo(t, repo, "user-1", "Todo "+string(rune('A'+i)),
+			model.TodoStatusPending, model.TodoPriorityMedium)
 	}
 
 	// Delete all todos for the user
-	err = repo.DeleteByUserID("user-1")
+	err := repo.DeleteByUserID("user-1")
 	if err != nil {
 		t.Fatalf("DeleteByUserID failed: %v", err)
 	}
