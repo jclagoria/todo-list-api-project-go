@@ -134,7 +134,6 @@ func (r *TodoRepository) Delete(userID, todoID string) error {
 }
 
 func (r *TodoRepository) List(userID string, params ListParams) (*ListResult, error) {
-	// Apply defaults
 	if params.Page <= 0 {
 		params.Page = 1
 	}
@@ -145,70 +144,20 @@ func (r *TodoRepository) List(userID string, params ListParams) (*ListResult, er
 		params.Limit = 100
 	}
 
-	// Build query
-	query := "SELECT id, user_id, title, description, status, priority, due_date, created_at, updated_at, deleted_at FROM todos WHERE user_id = ? AND deleted_at IS NULL"
-	countQuery := "SELECT COUNT(*) FROM todos WHERE user_id = ? AND deleted_at IS NULL"
-	args := []interface{}{userID}
+	where, filterArgs := todoFilters(params)
+	args := append([]interface{}{userID}, filterArgs...)
 
-	// Add filters
-	if len(params.Status) > 0 {
-		placeholders := make([]string, len(params.Status))
-		for i, s := range params.Status {
-			placeholders[i] = "?"
-			args = append(args, s)
-		}
-		query += " AND status IN (" + strings.Join(placeholders, ",") + ")"
-		countQuery += " AND status IN (" + strings.Join(placeholders, ",") + ")"
-	}
-
-	if len(params.Priority) > 0 {
-		placeholders := make([]string, len(params.Priority))
-		for i, p := range params.Priority {
-			placeholders[i] = "?"
-			args = append(args, p)
-		}
-		query += " AND priority IN (" + strings.Join(placeholders, ",") + ")"
-		countQuery += " AND priority IN (" + strings.Join(placeholders, ",") + ")"
-	}
-
-	if params.Title != "" {
-		query += " AND title LIKE ?"
-		countQuery += " AND title LIKE ?"
-		args = append(args, "%"+params.Title+"%")
-	}
-
-	// Get total count
+	countQuery := "SELECT COUNT(*) FROM todos WHERE user_id = ? AND deleted_at IS NULL" + where
 	var totalCount int
 	if err := r.db.QueryRow(countQuery, args...).Scan(&totalCount); err != nil {
 		return nil, err
 	}
 
-	// Add sorting
-	sortField := "created_at"
-	if params.Sort == "updated_at" || params.Sort == "due_date" || params.Sort == "priority" {
-		sortField = params.Sort
-	}
-
-	order := "DESC"
-	if params.Order == "asc" {
-		order = "ASC"
-	}
-
-	// Special case for priority sort
-	if sortField == "priority" { //nolint:staticcheck
-		query += " ORDER BY CASE priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 WHEN 'low' THEN 4 END ASC"
-	} else if sortField == "due_date" {
-		query += " ORDER BY due_date IS NULL, due_date " + order
-	} else {
-		query += " ORDER BY " + sortField + " " + order
-	}
-
-	// Add pagination
-	offset := (params.Page - 1) * params.Limit
+	query := "SELECT id, user_id, title, description, status, priority, due_date, created_at, updated_at, deleted_at FROM todos WHERE user_id = ? AND deleted_at IS NULL"
+	query += where + orderByClause(params.Sort, params.Order)
 	query += " LIMIT ? OFFSET ?"
-	args = append(args, params.Limit, offset)
+	args = append(args, params.Limit, (params.Page-1)*params.Limit)
 
-	// Execute query
 	rows, err := r.db.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -217,19 +166,10 @@ func (r *TodoRepository) List(userID string, params ListParams) (*ListResult, er
 		_ = rows.Close()
 	}()
 
-	var todos []model.Todo
-	for rows.Next() {
-		var t model.Todo
-		if err := rows.Scan(&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.CreatedAt, &t.UpdatedAt, &t.DeletedAt); err != nil {
-			return nil, err
-		}
-		todos = append(todos, t)
-	}
-	if err := rows.Err(); err != nil {
+	todos, err := scanTodos(rows)
+	if err != nil {
 		return nil, err
 	}
-
-	// Handle empty result
 	if todos == nil {
 		todos = []model.Todo{}
 	}
@@ -246,6 +186,62 @@ func (r *TodoRepository) List(userID string, params ListParams) (*ListResult, er
 		Limit:      params.Limit,
 		TotalPages: totalPages,
 	}, nil
+}
+
+// ponytail: extracted from List to keep its cognitive complexity under the linter limit
+func todoFilters(params ListParams) (string, []interface{}) {
+	var where string
+	var args []interface{}
+	if len(params.Status) > 0 {
+		where += " AND status IN (" + placeholders(len(params.Status)) + ")"
+		for _, s := range params.Status {
+			args = append(args, s)
+		}
+	}
+	if len(params.Priority) > 0 {
+		where += " AND priority IN (" + placeholders(len(params.Priority)) + ")"
+		for _, p := range params.Priority {
+			args = append(args, p)
+		}
+	}
+	if params.Title != "" {
+		where += " AND title LIKE ?"
+		args = append(args, "%"+params.Title+"%")
+	}
+	return where, args
+}
+
+func placeholders(n int) string {
+	return strings.TrimRight(strings.Repeat("?,", n), ",")
+}
+
+func orderByClause(sortField, order string) string {
+	dir := "DESC"
+	if order == "asc" {
+		dir = "ASC"
+	}
+	switch sortField {
+	case "priority":
+		return " ORDER BY CASE priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 WHEN 'low' THEN 4 END ASC"
+	case "due_date":
+		return " ORDER BY due_date IS NULL, due_date " + dir
+	case "updated_at":
+		return " ORDER BY updated_at " + dir
+	default:
+		return " ORDER BY created_at " + dir
+	}
+}
+
+func scanTodos(rows *sql.Rows) ([]model.Todo, error) {
+	var todos []model.Todo
+	for rows.Next() {
+		var t model.Todo
+		if err := rows.Scan(&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.Priority, &t.DueDate, &t.CreatedAt, &t.UpdatedAt, &t.DeletedAt); err != nil {
+			return nil, err
+		}
+		todos = append(todos, t)
+	}
+	return todos, rows.Err()
 }
 
 func (r *TodoRepository) DeleteByUserID(userID string) error {

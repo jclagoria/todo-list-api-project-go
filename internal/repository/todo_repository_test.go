@@ -120,10 +120,7 @@ func TestFindByID(t *testing.T) {
 	created := seedTodo(t, repo, "user-1", "Test Todo", model.TodoStatusPending, model.TodoPriorityMedium)
 
 	t.Run("found", func(t *testing.T) {
-		found, err := repo.FindByID("user-1", created.ID)
-		if err != nil {
-			t.Fatalf("FindByID failed: %v", err)
-		}
+		found := mustFindByID(t, repo, "user-1", created.ID)
 		if found == nil {
 			t.Fatal("expected todo to be found")
 		}
@@ -133,54 +130,51 @@ func TestFindByID(t *testing.T) {
 	})
 
 	t.Run("not found", func(t *testing.T) {
-		found, err := repo.FindByID("user-1", "non-existent")
-		if err != nil {
-			t.Fatalf("FindByID failed: %v", err)
-		}
-		if found != nil {
+		if found := mustFindByID(t, repo, "user-1", "non-existent"); found != nil {
 			t.Error("expected nil for non-existent todo")
 		}
 	})
 
 	t.Run("soft-deleted", func(t *testing.T) {
-		// Soft delete the todo
-		_, err := db.Exec("UPDATE todos SET deleted_at = ? WHERE id = ?",
-			time.Now(), created.ID)
-		if err != nil {
-			t.Fatalf("failed to soft delete: %v", err)
-		}
+		softDeleteTodo(t, db, created.ID)
 
-		found, err := repo.FindByID("user-1", created.ID)
-		if err != nil {
-			t.Fatalf("FindByID failed: %v", err)
-		}
-		if found != nil {
+		if found := mustFindByID(t, repo, "user-1", created.ID); found != nil {
 			t.Error("expected nil for soft-deleted todo")
 		}
 	})
 
 	t.Run("different user", func(t *testing.T) {
-		// Create another user
-		_, err := db.Exec("INSERT INTO users (id, name, email, password_hash) VALUES (?, ?, ?, ?)",
-			"user-2", "Other User", "other@example.com", "hash")
-		if err != nil {
-			t.Fatalf("failed to create user: %v", err)
-		}
+		seedUser(t, db, "user-2", "Other User", "other@example.com")
+		restoreTodo(t, db, created.ID)
 
-		// Reset deleted_at for the todo
-		_, err = db.Exec("UPDATE todos SET deleted_at = NULL WHERE id = ?", created.ID)
-		if err != nil {
-			t.Fatalf("failed to reset deleted_at: %v", err)
-		}
-
-		found, err := repo.FindByID("user-2", created.ID)
-		if err != nil {
-			t.Fatalf("FindByID failed: %v", err)
-		}
-		if found != nil {
+		if found := mustFindByID(t, repo, "user-2", created.ID); found != nil {
 			t.Error("expected nil for todo belonging to different user")
 		}
 	})
+}
+
+// ponytail: extracted to keep TestFindByID under the cognitive complexity limit
+func mustFindByID(t *testing.T, repo *TodoRepository, userID, todoID string) *model.Todo {
+	t.Helper()
+	found, err := repo.FindByID(userID, todoID)
+	if err != nil {
+		t.Fatalf("FindByID failed: %v", err)
+	}
+	return found
+}
+
+func softDeleteTodo(t *testing.T, db *sql.DB, id string) {
+	t.Helper()
+	if _, err := db.Exec("UPDATE todos SET deleted_at = ? WHERE id = ?", time.Now(), id); err != nil {
+		t.Fatalf("failed to soft delete: %v", err)
+	}
+}
+
+func restoreTodo(t *testing.T, db *sql.DB, id string) {
+	t.Helper()
+	if _, err := db.Exec("UPDATE todos SET deleted_at = NULL WHERE id = ?", id); err != nil {
+		t.Fatalf("failed to reset deleted_at: %v", err)
+	}
 }
 
 func TestUpdate(t *testing.T) {
@@ -306,60 +300,49 @@ func TestList(t *testing.T) {
 			model.TodoStatusPending, model.TodoPriorityMedium)
 	}
 
-	t.Run("default pagination", func(t *testing.T) {
-		result, err := repo.List("user-1", ListParams{})
-		if err != nil {
-			t.Fatalf("List failed: %v", err)
-		}
-		if result.Page != 1 {
-			t.Errorf("expected Page 1, got %d", result.Page)
-		}
-		if result.Limit != 20 {
-			t.Errorf("expected Limit 20, got %d", result.Limit)
-		}
-		if result.TotalCount != 5 {
-			t.Errorf("expected TotalCount 5, got %d", result.TotalCount)
-		}
-		if len(result.Todos) != 5 {
-			t.Errorf("expected 5 todos, got %d", len(result.Todos))
-		}
-	})
+	tests := []listTestCase{
+		{"default pagination", ListParams{}, 1, 20, 5, 5, 1},
+		{"custom pagination", ListParams{Page: 2, Limit: 2}, 2, 2, 5, 2, 3},
+		{"limit cap", ListParams{Limit: 200}, 1, 100, 5, 5, 1},
+		{"page beyond total", ListParams{Page: 100, Limit: 20}, 100, 20, 5, 0, 1},
+	}
 
-	t.Run("custom pagination", func(t *testing.T) {
-		result, err := repo.List("user-1", ListParams{Page: 2, Limit: 2})
-		if err != nil {
-			t.Fatalf("List failed: %v", err)
-		}
-		if result.Page != 2 {
-			t.Errorf("expected Page 2, got %d", result.Page)
-		}
-		if len(result.Todos) != 2 {
-			t.Errorf("expected 2 todos, got %d", len(result.Todos))
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertListResult(t, repo, tt)
+		})
+	}
+}
 
-	t.Run("limit cap", func(t *testing.T) {
-		result, err := repo.List("user-1", ListParams{Limit: 200})
-		if err != nil {
-			t.Fatalf("List failed: %v", err)
-		}
-		if result.Limit != 100 {
-			t.Errorf("expected Limit 100, got %d", result.Limit)
-		}
-	})
+// ponytail: assertions extracted so TestList stays under the cognitive complexity limit
+type listTestCase struct {
+	name           string
+	params         ListParams
+	wantPage       int
+	wantLimit      int
+	wantTotalCount int
+	wantTodos      int
+	wantTotalPages int
+}
 
-	t.Run("page beyond total", func(t *testing.T) {
-		result, err := repo.List("user-1", ListParams{Page: 100, Limit: 20})
-		if err != nil {
-			t.Fatalf("List failed: %v", err)
-		}
-		if len(result.Todos) != 0 {
-			t.Errorf("expected 0 todos, got %d", len(result.Todos))
-		}
-		if result.TotalPages != 1 {
-			t.Errorf("expected TotalPages 1, got %d", result.TotalPages)
-		}
-	})
+func assertListResult(t *testing.T, repo *TodoRepository, tt listTestCase) {
+	t.Helper()
+	result := mustList(t, repo, tt.params)
+	if result.Page != tt.wantPage {
+		t.Errorf("expected Page %d, got %d", tt.wantPage, result.Page)
+	}
+	if result.Limit != tt.wantLimit {
+		t.Errorf("expected Limit %d, got %d", tt.wantLimit, result.Limit)
+	}
+	if result.TotalCount != tt.wantTotalCount {
+		t.Errorf("expected TotalCount %d, got %d", tt.wantTotalCount, result.TotalCount)
+	}
+	if len(result.Todos) != tt.wantTodos {
+		t.Errorf("expected %d todos, got %d", tt.wantTodos, len(result.Todos))
+	}
+	if result.TotalPages != tt.wantTotalPages {
+		t.Errorf("expected TotalPages %d, got %d", tt.wantTotalPages, result.TotalPages)
+	}
 }
 
 func TestFilter(t *testing.T) {
@@ -387,54 +370,46 @@ func TestFilter(t *testing.T) {
 	}
 
 	t.Run("filter by status", func(t *testing.T) {
-		result, err := repo.List("user-1", ListParams{
-			Status: []string{"pending"},
-		})
-		if err != nil {
-			t.Fatalf("List failed: %v", err)
-		}
+		result := mustList(t, repo, ListParams{Status: []string{"pending"}})
 		if result.TotalCount != 3 {
 			t.Errorf("expected 3 pending todos, got %d", result.TotalCount)
 		}
 	})
 
 	t.Run("filter by priority", func(t *testing.T) {
-		result, err := repo.List("user-1", ListParams{
-			Priority: []string{"urgent", "high"},
-		})
-		if err != nil {
-			t.Fatalf("List failed: %v", err)
-		}
+		result := mustList(t, repo, ListParams{Priority: []string{"urgent", "high"}})
 		if result.TotalCount != 2 {
 			t.Errorf("expected 2 urgent/high todos, got %d", result.TotalCount)
 		}
 	})
 
 	t.Run("filter by title", func(t *testing.T) {
-		result, err := repo.List("user-1", ListParams{
-			Title: "milk",
-		})
-		if err != nil {
-			t.Fatalf("List failed: %v", err)
-		}
+		result := mustList(t, repo, ListParams{Title: "milk"})
 		if result.TotalCount != 1 {
 			t.Errorf("expected 1 todo with 'milk' in title, got %d", result.TotalCount)
 		}
 	})
 
 	t.Run("combined filters", func(t *testing.T) {
-		result, err := repo.List("user-1", ListParams{
+		result := mustList(t, repo, ListParams{
 			Status:   []string{"pending"},
 			Priority: []string{"high"},
 			Title:    "eggs",
 		})
-		if err != nil {
-			t.Fatalf("List failed: %v", err)
-		}
 		if result.TotalCount != 1 {
 			t.Errorf("expected 1 todo matching all filters, got %d", result.TotalCount)
 		}
 	})
+}
+
+// ponytail: extracted so TestFilter stays under the cognitive complexity limit
+func mustList(t *testing.T, repo *TodoRepository, params ListParams) *ListResult {
+	t.Helper()
+	result, err := repo.List("user-1", params)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	return result
 }
 
 func TestSort(t *testing.T) {

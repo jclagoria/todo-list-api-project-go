@@ -77,8 +77,16 @@ func respondTokenError(c *gin.Context, err error) {
 	RespondInternalError(c)
 }
 
+// ponytail: named handlers keep RegisterAuthRoutes under the cognitive complexity limit
 func RegisterAuthRoutes(router *gin.Engine, svc *auth.AuthService) {
-	router.POST("/v1/register", func(c *gin.Context) {
+	router.POST("/v1/register", handleRegister(svc))
+	router.POST("/v1/login", handleLogin(svc))
+	router.POST("/v1/refresh", handleRefresh(svc))
+	router.POST("/v1/logout", handleLogout(svc))
+}
+
+func handleRegister(svc *auth.AuthService) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		var req registerRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			RespondValidationError(c, validationDetails(err))
@@ -100,9 +108,11 @@ func RegisterAuthRoutes(router *gin.Engine, svc *auth.AuthService) {
 			AccessToken:  access,
 			RefreshToken: refresh,
 		})
-	})
+	}
+}
 
-	router.POST("/v1/login", func(c *gin.Context) {
+func handleLogin(svc *auth.AuthService) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		var req loginRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			RespondValidationError(c, validationDetails(err))
@@ -124,9 +134,11 @@ func RegisterAuthRoutes(router *gin.Engine, svc *auth.AuthService) {
 			AccessToken:  access,
 			RefreshToken: refresh,
 		})
-	})
+	}
+}
 
-	router.POST("/v1/refresh", func(c *gin.Context) {
+func handleRefresh(svc *auth.AuthService) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		var req tokenRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			RespondValidationError(c, validationDetails(err))
@@ -144,9 +156,11 @@ func RegisterAuthRoutes(router *gin.Engine, svc *auth.AuthService) {
 			AccessToken:  access,
 			RefreshToken: refresh,
 		})
-	})
+	}
+}
 
-	router.POST("/v1/logout", func(c *gin.Context) {
+func handleLogout(svc *auth.AuthService) gin.HandlerFunc {
+	return func(c *gin.Context) {
 		var req tokenRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
 			RespondValidationError(c, validationDetails(err))
@@ -159,5 +173,5 @@ func RegisterAuthRoutes(router *gin.Engine, svc *auth.AuthService) {
 		}
 
 		RespondSuccess(c, gin.H{"message": "logged out"})
-	})
+	}
 }
