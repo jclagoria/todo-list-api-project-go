@@ -147,6 +147,10 @@ func (r *TodoRepository) List(userID string, params ListParams) (*ListResult, er
 	where, filterArgs := todoFilters(params)
 	args := append([]interface{}{userID}, filterArgs...)
 
+	// Dynamic SQL is safe here: every user-supplied value (userID, status,
+	// priority, title) is bound as a `?` placeholder, never concatenated.
+	// The appended `where` fragment contains only literal `?,` placeholders
+	// (todoFilters) and orderByClause whitelists sort/order to fixed strings.
 	countQuery := "SELECT COUNT(*) FROM todos WHERE user_id = ? AND deleted_at IS NULL" + where
 	var totalCount int
 	if err := r.db.QueryRow(countQuery, args...).Scan(&totalCount); err != nil {
