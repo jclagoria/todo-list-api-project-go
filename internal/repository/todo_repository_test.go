@@ -7,7 +7,7 @@ import (
 
 	"todo-list-api/internal/model"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/mattn/go-sqlite3" // Register SQLite driver for database/sql
 )
 
 func setupTestDB(t *testing.T) *sql.DB {
