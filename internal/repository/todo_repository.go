@@ -3,6 +3,7 @@ package repository
 import (
 	"database/sql"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 
@@ -80,8 +81,8 @@ func (r *TodoRepository) FindByID(userID, todoID string) (*model.Todo, error) {
 }
 
 var (
-	ErrTodoNotFound  = errors.New("todo not found")
-	ErrNotOwner      = errors.New("not owner")
+	ErrTodoNotFound = errors.New("todo not found")
+	ErrNotOwner     = errors.New("not owner")
 )
 
 func (r *TodoRepository) Update(userID, todoID string, todo *model.Todo) (*model.Todo, error) {
@@ -133,6 +134,17 @@ func (r *TodoRepository) Delete(userID, todoID string) error {
 	return nil
 }
 
+// listQuery is a fixed-shape literal: every value is bound as a `?`
+// placeholder, nothing is ever concatenated into the SQL. Optional filters
+// use `(? IS NULL OR ...)` so the query text never changes.
+const listQuery = `SELECT id, user_id, title, description, status, priority, due_date, created_at, updated_at, deleted_at
+		FROM todos
+		WHERE user_id = ?
+		  AND deleted_at IS NULL
+		  AND (? IS NULL OR instr(?, ',' || status || ',') > 0)
+		  AND (? IS NULL OR instr(?, ',' || priority || ',') > 0)
+		  AND (? IS NULL OR title LIKE ?)`
+
 func (r *TodoRepository) List(userID string, params ListParams) (*ListResult, error) {
 	if params.Page <= 0 {
 		params.Page = 1
@@ -144,25 +156,7 @@ func (r *TodoRepository) List(userID string, params ListParams) (*ListResult, er
 		params.Limit = 100
 	}
 
-	where, filterArgs := todoFilters(params)
-	args := append([]interface{}{userID}, filterArgs...)
-
-	// Dynamic SQL is safe here: every user-supplied value (userID, status,
-	// priority, title) is bound as a `?` placeholder, never concatenated.
-	// The appended `where` fragment contains only literal `?,` placeholders
-	// (todoFilters) and orderByClause whitelists sort/order to fixed strings.
-	countQuery := "SELECT COUNT(*) FROM todos WHERE user_id = ? AND deleted_at IS NULL" + where
-	var totalCount int
-	if err := r.db.QueryRow(countQuery, args...).Scan(&totalCount); err != nil {
-		return nil, err
-	}
-
-	query := "SELECT id, user_id, title, description, status, priority, due_date, created_at, updated_at, deleted_at FROM todos WHERE user_id = ? AND deleted_at IS NULL"
-	query += where + orderByClause(params.Sort, params.Order)
-	query += " LIMIT ? OFFSET ?"
-	args = append(args, params.Limit, (params.Page-1)*params.Limit)
-
-	rows, err := r.db.Query(query, args...)
+	rows, err := r.db.Query(listQuery, listArgs(userID, params)...)
 	if err != nil {
 		return nil, err
 	}
@@ -177,6 +171,19 @@ func (r *TodoRepository) List(userID string, params ListParams) (*ListResult, er
 	if todos == nil {
 		todos = []model.Todo{}
 	}
+	totalCount := len(todos)
+
+	// ponytail: ORDER BY/LIMIT applied in Go so the SQL stays a literal;
+	// push sorting and pagination back into SQL if datasets outgrow memory.
+	sortTodos(todos, params.Sort, params.Order)
+	start := (params.Page - 1) * params.Limit
+	if start > totalCount {
+		start = totalCount
+	}
+	end := start + params.Limit
+	if end > totalCount {
+		end = totalCount
+	}
 
 	totalPages := totalCount / params.Limit
 	if totalCount%params.Limit > 0 {
@@ -184,7 +191,7 @@ func (r *TodoRepository) List(userID string, params ListParams) (*ListResult, er
 	}
 
 	return &ListResult{
-		Todos:      todos,
+		Todos:      todos[start:end],
 		TotalCount: totalCount,
 		Page:       params.Page,
 		Limit:      params.Limit,
@@ -192,48 +199,70 @@ func (r *TodoRepository) List(userID string, params ListParams) (*ListResult, er
 	}, nil
 }
 
-// ponytail: extracted from List to keep its cognitive complexity under the linter limit
-func todoFilters(params ListParams) (string, []interface{}) {
-	var where string
-	var args []interface{}
-	if len(params.Status) > 0 {
-		where += " AND status IN (" + placeholders(len(params.Status)) + ")"
-		for _, s := range params.Status {
-			args = append(args, s)
-		}
+// listArgs matches listQuery's WHERE clause: userID plus a (flag, value)
+// pair per optional filter; binding nil disables that filter.
+func listArgs(userID string, p ListParams) []interface{} {
+	return []interface{}{
+		userID,
+		instrSet(p.Status), instrSet(p.Status),
+		instrSet(p.Priority), instrSet(p.Priority),
+		titlePattern(p.Title), titlePattern(p.Title),
 	}
-	if len(params.Priority) > 0 {
-		where += " AND priority IN (" + placeholders(len(params.Priority)) + ")"
-		for _, p := range params.Priority {
-			args = append(args, p)
-		}
-	}
-	if params.Title != "" {
-		where += " AND title LIKE ?"
-		args = append(args, "%"+params.Title+"%")
-	}
-	return where, args
 }
 
-func placeholders(n int) string {
-	return strings.TrimRight(strings.Repeat("?,", n), ",")
+// instrSet returns ",v1,v2," for token matching against a column value,
+// or nil when the filter is absent.
+func instrSet(values []string) interface{} {
+	if len(values) == 0 {
+		return nil
+	}
+	return "," + strings.Join(values, ",") + ","
 }
 
-func orderByClause(sortField, order string) string {
-	dir := "DESC"
-	if order == "asc" {
-		dir = "ASC"
+func titlePattern(title string) interface{} {
+	if title == "" {
+		return nil
 	}
-	switch sortField {
-	case "priority":
-		return " ORDER BY CASE priority WHEN 'urgent' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 WHEN 'low' THEN 4 END ASC"
-	case "due_date":
-		return " ORDER BY due_date IS NULL, due_date " + dir
-	case "updated_at":
-		return " ORDER BY updated_at " + dir
-	default:
-		return " ORDER BY created_at " + dir
+	return "%" + title + "%"
+}
+
+var priorityRanks = map[model.TodoPriority]int{
+	model.TodoPriorityUrgent: 1,
+	model.TodoPriorityHigh:   2,
+	model.TodoPriorityMedium: 3,
+	model.TodoPriorityLow:    4,
+}
+
+// sortTodos applies the API sort contract: priority ranks ascending
+// regardless of order, due_date nulls last, everything else honors order.
+func sortTodos(todos []model.Todo, field, order string) {
+	desc := order != "asc"
+	sort.SliceStable(todos, func(i, j int) bool {
+		a, b := todos[i], todos[j]
+		switch field {
+		case "priority":
+			return priorityRanks[a.Priority] < priorityRanks[b.Priority]
+		case "due_date":
+			if a.DueDate.Valid != b.DueDate.Valid {
+				return !a.DueDate.Valid
+			}
+			return compareTime(a.DueDate.Time, b.DueDate.Time, desc)
+		case "updated_at":
+			return compareTime(a.UpdatedAt, b.UpdatedAt, desc)
+		default: // created_at and unknown fields
+			return compareTime(a.CreatedAt, b.CreatedAt, desc)
+		}
+	})
+}
+
+func compareTime(a, b time.Time, desc bool) bool {
+	if a.Equal(b) {
+		return false
 	}
+	if desc {
+		return a.After(b)
+	}
+	return a.Before(b)
 }
 
 func scanTodos(rows *sql.Rows) ([]model.Todo, error) {
