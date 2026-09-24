@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"todo-list-api/internal/auth"
 	"todo-list-api/internal/db"
 	"todo-list-api/internal/handler"
 	"todo-list-api/internal/middleware"
@@ -54,6 +55,12 @@ func main() {
 	router.Use(middleware.RequestID())
 
 	handler.RegisterHealthRoutes(router, dbConn)
+
+	authSvc, err := auth.NewAuthService(auth.NewUserRepository(dbConn), auth.NewRefreshTokenRepository(dbConn))
+	if err != nil {
+		log.Fatalf("Failed to create auth service: %v", err)
+	}
+	handler.RegisterAuthRoutes(router, authSvc)
 
 	srv := &http.Server{
 		Addr:    ":" + port,

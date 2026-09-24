@@ -5,13 +5,17 @@ import (
 	"os"
 	"time"
 
+	"todo-list-api/internal/model"
+
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
 )
 
 var (
-	ErrInvalidToken  = errors.New("invalid token")
-	ErrExpiredToken  = errors.New("token expired")
-	ErrRevokedToken  = errors.New("token revoked")
+	ErrInvalidToken       = errors.New("invalid token")
+	ErrExpiredToken       = errors.New("token expired")
+	ErrRevokedToken       = errors.New("token revoked")
+	ErrInvalidCredentials = errors.New("invalid credentials")
 )
 
 type AuthService struct {
@@ -69,6 +73,67 @@ func (s *AuthService) CreateRefreshToken(userID string) (string, time.Time, erro
 		return "", time.Time{}, err
 	}
 	return rt.Token, rt.ExpiresAt, nil
+}
+
+func (s *AuthService) Register(name, email, password string) (*model.User, string, string, error) {
+	userID, err := s.users.Create(name, email, password)
+	if err != nil {
+		return nil, "", "", err
+	}
+	user, err := s.users.FindByID(userID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if user == nil {
+		return nil, "", "", ErrUserNotFound
+	}
+	return s.issueTokens(user)
+}
+
+func (s *AuthService) Login(email, password string) (*model.User, string, string, error) {
+	user, err := s.users.FindByEmail(email)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if user == nil {
+		return nil, "", "", ErrInvalidCredentials
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+		return nil, "", "", ErrInvalidCredentials
+	}
+	return s.issueTokens(user)
+}
+
+func (s *AuthService) issueTokens(user *model.User) (*model.User, string, string, error) {
+	access, err := s.GenerateAccessToken(user.ID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	refresh, _, err := s.CreateRefreshToken(user.ID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return user, access, refresh, nil
+}
+
+// Refresh rotates the current refresh token and returns the user with a new pair.
+func (s *AuthService) Refresh(currentToken string) (*model.User, string, string, error) {
+	access, refresh, err := s.RotateRefreshToken(currentToken)
+	if err != nil {
+		return nil, "", "", err
+	}
+	userID, err := s.ValidateAccessToken(access)
+	if err != nil {
+		return nil, "", "", err
+	}
+	user, err := s.users.FindByID(userID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if user == nil {
+		return nil, "", "", ErrUserNotFound
+	}
+	return user, access, refresh, nil
 }
 
 func (s *AuthService) RotateRefreshToken(currentToken string) (string, string, error) {
